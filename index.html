@@ -151,6 +151,8 @@
     color: rgba(255,255,255,0.25);
     font-size: 12px;
     pointer-events: none;
+    text-align: center;
+    line-height: 1.6;
   }
   #solverStatus {
     font-size: 11px;
@@ -158,12 +160,42 @@
     text-align: center;
     min-height: 16px;
   }
+  .key-hint {
+    display: inline-block;
+    background: rgba(255,255,255,0.1);
+    border: 1px solid rgba(255,255,255,0.18);
+    border-radius: 5px;
+    padding: 1px 7px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    margin: 0 2px;
+    font-family: 'SF Mono', 'Menlo', monospace;
+  }
+  .key-hint.shift { color: var(--gold); }
+  .key-row { display: flex; align-items: center; gap: 6px; padding: 3px 0; font-size: 12px; color: var(--muted); }
+  .key-row span { min-width: 40px; text-align: right; }
+  #flash-msg {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%) scale(0);
+    font-size: 80px;
+    font-weight: 900;
+    color: var(--gold);
+    pointer-events: none;
+    text-shadow: 0 0 30px rgba(240,192,64,0.6);
+    transition: transform 0.15s cubic-bezier(0.34, 1.56, 0.64, 1);
+    opacity: 0;
+  }
+  #flash-msg.pop { transform: translate(-50%, -50%) scale(1); opacity: 1; }
 </style>
 </head>
 <body>
 
 <div id="canvas-container">
-  <div id="hint">🖱 拖拽旋转 &nbsp;|&nbsp; 滚轮缩放 &nbsp;|&nbsp; 右键平移</div>
+  <div id="flash-msg"></div>
+  <div id="hint">🖱 拖拽旋转 &nbsp;|&nbsp; 滚轮缩放 &nbsp;|&nbsp; 右键平移<br>⌨ 按键旋转魔方：见右侧面板</div>
 </div>
 
 <div id="panel">
@@ -214,6 +246,16 @@
       <input type="range" id="speedSlider" min="1" max="10" value="4" step="1">
       <span id="speedLabel">4×</span>
     </div>
+  </div>
+
+  <!-- Keyboard controls -->
+  <div class="divider"></div>
+  <div style="font-size:12px;color:var(--muted);margin-bottom:-8px;">⌨ 键盘旋转（手动把玩）</div>
+  <div class="info-card" style="padding:10px 12px;">
+    <div class="key-row"><span>U / D</span> 上下层</div>
+    <div class="key-row"><span>R / L</span> 右 / 左层</div>
+    <div class="key-row"><span>F / B</span> 前 / 后层</div>
+    <div class="key-row"><span style="min-width:60px;"><span class="key-hint shift">Shift</span>+键</span> 反向旋转</div>
   </div>
 
   <div style="margin-top:auto;padding-top:12px;">
@@ -476,7 +518,44 @@ class VisualCube {
 
 // ─── Main App ──────────────────────────────────────────
 let visualCube, solving = false, stopRequested = false;
+let appliedMoveHistory = [];
 let solverReady = false;
+
+// Keyboard → face mapping
+const KEY_FACE_MAP = {
+  'u': 'U', 'd': 'D', 'r': 'R', 'l': 'L', 'f': 'F', 'b': 'B',
+};
+
+function popFlash(text) {
+  const el = document.getElementById('flash-msg');
+  el.textContent = text;
+  el.classList.add('pop');
+  setTimeout(() => el.classList.remove('pop'), 350);
+}
+
+function handleKeyMove(key, shift) {
+  if (solving || visualCube.animating) return;
+
+  const face = KEY_FACE_MAP[key];
+  if (!face) return;
+
+  const mod = shift ? "'" : '';
+  const move = face + mod;
+  const dur = 100; // fast & responsive for manual play
+
+  // Track for solver
+  appliedMoveHistory.push(move);
+  visualCube.lastScramble = appliedMoveHistory.join(' ');
+  visualCube.lastScrambleMoves = appliedMoveHistory.slice();
+
+  visualCube.animateMove(move, dur);
+
+  // Flash feedback
+  popFlash(face + (mod || ''));
+  document.getElementById('scrambleCount').textContent = appliedMoveHistory.length;
+  document.getElementById('optimalMoves').textContent = '—';
+  updateStatus('scrambled');
+}
 
 function complexityMoves(level, size) {
   if (size === 3) return { easy: 8, medium: 15, hard: 20 }[level];
@@ -514,6 +593,7 @@ async function init() {
       document.querySelectorAll('.size-btn').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       visualCube.resetCube(parseInt(btn.dataset.size));
+      appliedMoveHistory = [];
       updateStatus('solved');
       document.getElementById('scrambleCount').textContent = '0';
       document.getElementById('optimalMoves').textContent = '—';
@@ -541,6 +621,7 @@ async function init() {
     const n = complexityMoves(level, size);
     const result = await visualCube.scramble(n);
 
+    appliedMoveHistory = result.moves.slice();
     document.getElementById('scrambleCount').textContent = result.moves.length;
 
     // ★ Compute optimal solution with Kociemba (for 3x3)
@@ -564,8 +645,8 @@ async function init() {
   // Solve
   document.getElementById('btnSolve').addEventListener('click', async () => {
     if (solving) return;
-    if (!visualCube.lastScramble) {
-      document.getElementById('msgText').textContent = '请先打乱魔方';
+    if (appliedMoveHistory.length === 0) {
+      document.getElementById('msgText').textContent = '请先打乱或旋转魔方';
       setTimeout(() => { document.getElementById('msgText').textContent = ''; }, 2000);
       return;
     }
@@ -577,6 +658,10 @@ async function init() {
     const size = visualCube.size;
     let solution;
 
+    // Sync current state to VisualCube for solver
+    visualCube.lastScramble = appliedMoveHistory.join(' ');
+    visualCube.lastScrambleMoves = appliedMoveHistory.slice();
+
     if (size === 3 && solverReady) {
       // ★ Kociemba optimal solve
       document.getElementById('msgText').textContent = '🧠 Kociemba 计算最优解...';
@@ -586,19 +671,19 @@ async function init() {
         document.getElementById('optimalMoves').textContent = solution.length;
       } catch(e) {
         // Fallback to reverse
-        solution = [...visualCube.lastScrambleMoves].reverse().map(invertMove);
+        solution = [...appliedMoveHistory].reverse().map(invertMove);
         document.getElementById('optimalMoves').textContent = solution.length;
       }
     } else {
       // 2x2: reverse scramble
-      solution = [...visualCube.lastScrambleMoves].reverse().map(invertMove);
+      solution = [...appliedMoveHistory].reverse().map(invertMove);
       document.getElementById('optimalMoves').textContent = solution.length;
     }
 
     document.getElementById('msgText').textContent = `✨ 执行 ${solution.length} 步最优解...`;
 
     const speed = parseFloat(document.getElementById('speedSlider').value);
-    const dur = Math.max(50, 300 - speed * 25); // ★ Solve speed (slower, adjustable)
+    const dur = Math.max(50, 300 - speed * 25);
 
     let idx = 0;
     for (const m of solution) {
@@ -609,9 +694,13 @@ async function init() {
     }
 
     if (stopRequested) {
+      appliedMoveHistory = [];
+      visualCube.lastScramble = '';
+      visualCube.lastScrambleMoves = [];
       updateStatus('stopped');
       document.getElementById('msgText').textContent = '⏹ 已停止';
     } else {
+      appliedMoveHistory = [];
       visualCube.lastScramble = '';
       visualCube.lastScrambleMoves = [];
       updateStatus('solved');
@@ -626,6 +715,7 @@ async function init() {
   document.getElementById('btnReset').addEventListener('click', () => {
     if (solving) return;
     visualCube.resetCube(visualCube.size);
+    appliedMoveHistory = [];
     updateStatus('solved');
     document.getElementById('scrambleCount').textContent = '0';
     document.getElementById('optimalMoves').textContent = '—';
@@ -638,6 +728,38 @@ async function init() {
   // Speed slider
   document.getElementById('speedSlider').addEventListener('input', e => {
     document.getElementById('speedLabel').textContent = e.target.value + '×';
+  });
+
+  // ─── Keyboard Controls ─────────────────────────────
+  window.addEventListener('keydown', e => {
+    // Ignore if any modifier other than Shift is held (e.g. Ctrl+R, Cmd+F)
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+
+    const key = e.key.toLowerCase();
+    if (KEY_FACE_MAP[key]) {
+      e.preventDefault();
+      handleKeyMove(key, e.shiftKey);
+    }
+  });
+
+  // ─── Touch swipe support for mobile ─────────────────
+  let touchStart = null;
+  const canvasEl = container.querySelector('canvas');
+  canvasEl.addEventListener('touchstart', e => {
+    if (e.touches.length === 1) touchStart = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+  }, { passive: true });
+  canvasEl.addEventListener('touchend', e => {
+    if (!touchStart || solving || visualCube.animating) return;
+    const dx = (e.changedTouches[0]?.clientX || 0) - touchStart.x;
+    const dy = (e.changedTouches[0]?.clientY || 0) - touchStart.y;
+    const absDx = Math.abs(dx), absDy = Math.abs(dy);
+    if (Math.max(absDx, absDy) < 40) return; // too short
+    if (absDx > absDy) {
+      handleKeyMove(dx > 0 ? 'r' : 'l', false);
+    } else {
+      handleKeyMove(dy > 0 ? 'd' : 'u', false);
+    }
+    touchStart = null;
   });
 
   updateStatus('solved');
